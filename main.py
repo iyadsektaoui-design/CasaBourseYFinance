@@ -1,4 +1,3 @@
-# main.py
 from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
@@ -7,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="CasaBourse YFinance API", version="0.1.0")
 
-# السماح لـ Flutter بالوصول للـ API من أي دومين (يمكنك تضييقها لاحقًا)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,16 +32,32 @@ def _build_candles(yf_symbol: str, days: int):
         progress=False,
     )
 
-    if df.empty:
+    # لا توجد أي بيانات
+    if df is None or df.empty:
         raise HTTPException(status_code=404, detail="No data for this ticker")
 
-    # إزالة الصفوف الناقصة
+    cols = list(df.columns)
+
+    # إذا لم تكن أعمدة OHLC موجودة نحاول استعمال Adj Close
+    if not all(c in cols for c in ["Open", "High", "Low", "Close"]):
+        if "Adj Close" in cols:
+            adj = df["Adj Close"]
+            df = df.copy()
+            df["Open"] = adj
+            df["High"] = adj
+            df["Low"] = adj
+            df["Close"] = adj
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream data missing OHLC columns. Got columns: {cols}",
+            )
+
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
     df = df.sort_index()
 
     candles = []
     for ts, row in df.iterrows():
-        # تحويل التاريخ إلى ISO 8601 حتى يقرأه Dart بسهولة
         dt = ts.to_pydatetime().replace(tzinfo=timezone.utc)
         candles.append(
             {
@@ -70,16 +84,15 @@ def home():
 @app.get("/stock/{ticker}")
 def get_stock(ticker: str, days: int = 365):
     """
-    مثال:
-    - /stock/MASI        → يستعمل رمز ^MASI في Yahoo
-    - /stock/^GSPC      → أي رمز آخر كما هو
-    - /stock/MASI?days=1095  → آخر 3 سنوات تقريبًا
+    أمثلة:
+    - /stock/MSFT?days=60
+    - /stock/SPY?days=365
     """
     t = ticker.strip()
 
-    # تحويل MASI إلى الرمز المستعمل في Yahoo Finance إذا لزم الأمر
+    # MASI → ^MASI (إن وجد في Yahoo؛ غالبًا لا يوجد)
     if t.upper() == "MASI":
-        yf_symbol = "^MASI"  # غيّره إذا استعملت رمزًا آخر في yfinance
+        yf_symbol = "^MASI"
     else:
         yf_symbol = t
 
